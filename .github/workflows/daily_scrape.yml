@@ -1,0 +1,39 @@
+name: Daily ASX NZ Futures Scraper
+
+on:
+  schedule:
+    # 7:00 PM NZST = 07:00 UTC (during NZ Standard Time, UTC+12)
+    # 7:00 PM NZDT = 06:00 UTC (during NZ Daylight Time, UTC+13)
+    # Running at both times ensures 7pm is always covered year-round
+    - cron: '0 6 * * *'
+    - cron: '0 7 * * *'
+  workflow_dispatch:  # Allows manual trigger from GitHub UI
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 openpyxl pytz
+
+      - name: Run scraper
+        run: python scraper.py
+
+      - name: Commit and push updated Excel file
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add asx_nz_futures.xlsx
+          git diff --staged --quiet || git commit -m "Daily scrape: $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push
