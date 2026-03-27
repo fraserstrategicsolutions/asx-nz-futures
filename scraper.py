@@ -8,44 +8,49 @@ import pytz
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 
 DATASET_URL = "https://www.asxenergy.com.au/futures_nz/dataset"
 EXCEL_FILE = "asx_nz_futures.xlsx"
 LOCATIONS = ["Otahuhu", "Benmore"]
-
-# Product types we want to capture (partial match, case-insensitive)
 PRODUCT_TYPES = ["Base Month", "Base Quarter"]
-
-# Per-contract fields captured from the table
 CONTRACT_FIELDS = ["Bid Size", "Bid", "Ask", "Ask Size", "High", "Low", "Last", "+/-", "Vol"]
 
 
 def fetch_html_with_selenium():
     """Use headless Chrome to fully render the JS-driven page."""
     options = Options()
-    options.add_argument("--headless")
+    options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
     options.add_argument(
         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
 
-    driver = webdriver.Chrome(options=options)
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
+
     try:
+        print(f"Loading {DATASET_URL} ...")
         driver.get(DATASET_URL)
-        # Wait until at least one data table row appears
+
+        # Wait up to 30s for at least one table row to appear
         WebDriverWait(driver, 30).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr"))
         )
-        # Extra pause to let all tables finish rendering
-        time.sleep(3)
+        # Extra pause to let all sections finish rendering
+        time.sleep(5)
+
         html = driver.page_source
+        print(f"Page loaded — {len(html)} chars")
     finally:
         driver.quit()
 
@@ -54,23 +59,46 @@ def fetch_html_with_selenium():
 
 def parse_data(html):
     """
-    Parse the rendered HTML and return:
+    Parse rendered HTML and return:
       last_update (str)
-      data: dict  {location: {product_name: [ {Contract, Bid Size, ...}, ... ] }}
+      data: {location: {product_name: [ {Contract, Bid Size, ...}, ... ] }}
     """
     soup = BeautifulSoup(html, "html.parser")
 
-    # --- Last update timestamp ---
+    # Debug: show all text in #last div
     last_div = soup.find("div", id="last")
     last_update = ""
     if last_div:
         date_str = last_div.get("data-date", "")
         time_str = last_div.get("data-time", "")
         last_update = f"{date_str} {time_str}".strip()
+        print(f"Found #last div: {last_update}")
+    else:
+        print("WARNING: #last div not found")
+
+    # Debug: show all h2s found
+    all_h2 = [h.get_text(strip=True) for h in soup.find_all("h2")]
+    print(f"All h2 tags: {all_h2}")
+
+    all_market = soup.find_all("div", class_="market-dataset")
+    print(f"market-dataset divs found: {len(all_market)}")
+
+    all_dataset = soup.find_all("div", class_="dataset")
+    print(f"dataset divs found: {len(all_dataset)}")
+
+    all_tables = soup.find_all("table")
+    print(f"tables found: {len(all_tables)}")
+
+    # If we find tables but no market-dataset wrappers, dump first table for diagnosis
+    if all_tables and not all_market:
+        print("Sample of first table:")
+        rows = all_tables[0].find_all("tr")[:5]
+        for r in rows:
+            print("  ", [td.get_text(strip=True) for td in r.find_all(["td", "th"])])
 
     results = {}
 
-    for section in soup.find_all("div", class_="market-dataset"):
+    for section in all_market:
         h2 = section.find("h2")
         if not h2:
             continue
@@ -81,16 +109,13 @@ def parse_data(html):
         location_data = {}
 
         for product_section in section.find_all("div", class_="dataset"):
-            # Product name from the nearest h3
             parent = product_section.parent
             h3 = parent.find("h3") if parent else None
             if not h3:
                 continue
             raw_name = h3.get_text(separator=" ", strip=True)
-            # Strip trailing button text / "ED" suffix
             product_name = raw_name.replace("ED", "").split("\n")[0].strip()
 
-            # Only capture the product types we care about
             if not any(pt.lower() in product_name.lower() for pt in PRODUCT_TYPES):
                 continue
 
@@ -98,12 +123,11 @@ def parse_data(html):
             if not table:
                 continue
 
-            # Parse column headers from thead
             thead = table.find("thead")
             if thead:
                 header_cells = [th.get_text(strip=True) for th in thead.find_all("th")]
             else:
-                header_cells = CONTRACT_FIELDS  # fallback
+                header_cells = ["Contract"] + CONTRACT_FIELDS
 
             rows = []
             tbody = table.find("tbody")
@@ -119,6 +143,7 @@ def parse_data(html):
 
             if rows:
                 location_data[product_name] = rows
+                print(f"  Parsed {location_name} / {product_name}: {len(rows)} contracts")
 
         results[location_name] = location_data
 
@@ -130,10 +155,10 @@ def get_nzt_timestamp():
     return datetime.now(nzt).strftime("%Y-%m-%d %H:%M:%S NZT")
 
 
-def build_flat_columns(data):
+def build_all_headers(data):
     """
-    Build the ordered list of column headers for the flat, one-row-per-day format.
-    Structure: Scraped At | ASX Last Update | <Location>_<Product>_<Contract>_<Field> ...
+    Build the full ordered column list for the flat one-row-per-day format.
+    Columns: Scraped At | ASX Last Update | Location | Product | Contract | Field ...
     """
     cols = ["Scraped At", "ASX Last Update"]
     for location in LOCATIONS:
@@ -152,9 +177,7 @@ def build_flat_columns(data):
 def write_to_excel(last_update, data):
     scraped_at = get_nzt_timestamp()
 
-    # ------------------------------------------------------------------
-    # Build the flat data dict for this scrape: column_name -> value
-    # ------------------------------------------------------------------
+    # Build flat dict for this scrape: column_name -> value
     flat_row = {"Scraped At": scraped_at, "ASX Last Update": last_update}
 
     for location in LOCATIONS:
@@ -167,9 +190,6 @@ def write_to_excel(last_update, data):
                     col = f"{location} | {product_name} | {contract} | {field}"
                     flat_row[col] = row_dict.get(field, "")
 
-    # ------------------------------------------------------------------
-    # Load or create workbook with a single "Data" sheet
-    # ------------------------------------------------------------------
     sheet_name = "Data"
 
     if os.path.exists(EXCEL_FILE):
@@ -178,60 +198,55 @@ def write_to_excel(last_update, data):
             ws = wb[sheet_name]
         else:
             ws = wb.create_sheet(title=sheet_name)
+            # Remove default blank sheet if present
+            if "Sheet" in wb.sheetnames:
+                del wb["Sheet"]
     else:
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = sheet_name
 
-    # ------------------------------------------------------------------
-    # Determine existing headers (row 1) or create them
-    # ------------------------------------------------------------------
     # Read existing headers from row 1
-    existing_headers = []
-    for cell in ws[1]:
-        if cell.value is not None:
-            existing_headers.append(cell.value)
+    existing_headers = [cell.value for cell in ws[1] if cell.value is not None]
 
-    # Build the full column list (existing + any new contracts from today)
-    new_cols = build_flat_columns(data)
-    all_headers = list(existing_headers)  # preserve existing order
+    # Merge with any new columns from today's data
+    new_cols = build_all_headers(data)
+    all_headers = list(existing_headers)
     for col in new_cols:
         if col not in all_headers:
             all_headers.append(col)
 
-    # Write/update header row if this is a new sheet or new columns appeared
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill("solid", fgColor="1F4E79")
+
     if not existing_headers:
-        # Brand new sheet — write headers
+        # New sheet — write full header row
         for col_idx, col_name in enumerate(all_headers, 1):
             cell = ws.cell(1, col_idx, col_name)
             cell.font = header_font
             cell.fill = header_fill
             cell.alignment = Alignment(horizontal="center", wrap_text=True)
         ws.row_dimensions[1].height = 60
+        ws.freeze_panes = "C2"
     elif len(all_headers) > len(existing_headers):
-        # New contracts appeared — extend headers
+        # New contracts appeared — extend header row
         for col_idx in range(len(existing_headers) + 1, len(all_headers) + 1):
             cell = ws.cell(1, col_idx, all_headers[col_idx - 1])
             cell.font = header_font
             cell.fill = header_fill
             cell.alignment = Alignment(horizontal="center", wrap_text=True)
 
-    # ------------------------------------------------------------------
-    # Append the data row
-    # ------------------------------------------------------------------
-    next_row = ws.max_row + 1
-    for col_idx, col_name in enumerate(all_headers, 1):
-        ws.cell(next_row, col_idx, flat_row.get(col_name, ""))
-
-    # Freeze top row and set sensible column widths
-    ws.freeze_panes = "A2"
-    ws.column_dimensions["A"].width = 26  # Scraped At
-    ws.column_dimensions["B"].width = 34  # ASX Last Update
+    # Set column widths
+    ws.column_dimensions["A"].width = 26
+    ws.column_dimensions["B"].width = 34
     for col_idx in range(3, len(all_headers) + 1):
         col_letter = openpyxl.utils.get_column_letter(col_idx)
         ws.column_dimensions[col_letter].width = 14
+
+    # Append the data row
+    next_row = ws.max_row + 1
+    for col_idx, col_name in enumerate(all_headers, 1):
+        ws.cell(next_row, col_idx, flat_row.get(col_name, ""))
 
     wb.save(EXCEL_FILE)
     print(f"Saved to {EXCEL_FILE} — {scraped_at} | ASX Update: {last_update}")
@@ -243,9 +258,6 @@ def main():
     html = fetch_html_with_selenium()
     last_update, data = parse_data(html)
     print(f"ASX Last Update: {last_update}")
-    for loc, products in data.items():
-        for prod, rows in products.items():
-            print(f"  {loc} / {prod}: {len(rows)} contracts")
     write_to_excel(last_update, data)
 
 
