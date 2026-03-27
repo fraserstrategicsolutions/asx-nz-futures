@@ -12,9 +12,15 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # Suppress Node.js 20 deprecation warning
+
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    concurrency:
+      group: scrape-job       # Only one instance runs at a time
+      cancel-in-progress: false  # Let the first finish; queue the second
 
     steps:
       - name: Checkout repository
@@ -29,13 +35,16 @@ jobs:
 
       - name: Install Chrome
         run: |
-          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
           sudo apt-get update -q
-          sudo apt-get install -y google-chrome-stable
+          sudo apt-get install -y wget gnupg ca-certificates
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
+          google-chrome --version
 
       - name: Install Python dependencies
-        run: pip install requests beautifulsoup4 openpyxl pytz selenium webdriver-manager
+        run: |
+          pip install --upgrade pip
+          pip install requests beautifulsoup4 openpyxl pytz selenium webdriver-manager
 
       - name: Run scraper
         run: python scraper.py
@@ -45,5 +54,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add asx_nz_futures.xlsx
-          git diff --staged --quiet || git commit -m "Daily scrape: $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git diff --staged --quiet && echo "No changes to commit" && exit 0
+          git commit -m "Daily scrape: $(date -u +'%Y-%m-%d %H:%M UTC')"
+          # Pull with rebase in case another run pushed while this one was running
+          git pull --rebase origin main
           git push
