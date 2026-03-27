@@ -1,26 +1,24 @@
+```yaml
 name: Daily ASX NZ Futures Scraper
 
 on:
   schedule:
-    # 7:00 PM NZST = 07:00 UTC (during NZ Standard Time, UTC+12)
-    # 7:00 PM NZDT = 06:00 UTC (during NZ Daylight Time, UTC+13)
-    # Running at both times ensures 7pm is always covered year-round
     - cron: '0 6 * * *'
     - cron: '0 7 * * *'
-  workflow_dispatch:  # Allows manual trigger from GitHub UI
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # Suppress Node.js 20 deprecation warning
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
     concurrency:
-      group: scrape-job       # Only one instance runs at a time
-      cancel-in-progress: false  # Let the first finish; queue the second
+      group: scrape-job
+      cancel-in-progress: false
 
     steps:
       - name: Checkout repository
@@ -46,6 +44,9 @@ jobs:
           pip install --upgrade pip
           pip install requests beautifulsoup4 openpyxl pytz selenium webdriver-manager
 
+      - name: Dump raw page HTML for diagnosis
+        run: python debug_dump.py
+
       - name: Run scraper
         run: python scraper.py
 
@@ -56,6 +57,6 @@ jobs:
           git add asx_nz_futures.xlsx
           git diff --staged --quiet && echo "No changes to commit" && exit 0
           git commit -m "Daily scrape: $(date -u +'%Y-%m-%d %H:%M UTC')"
-          # Pull with rebase in case another run pushed while this one was running
           git pull --rebase origin main
           git push
+```
