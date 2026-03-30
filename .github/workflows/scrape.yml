@@ -1,0 +1,59 @@
+name: ASX NZ Futures Daily Scrape
+
+on:
+  schedule:
+    # 7:00 PM NZST = 07:00 UTC (UTC+12 in winter / NZST)
+    # 7:00 PM NZDT = 06:00 UTC (UTC+13 in summer / NZDT)
+    # NZ observes DST: clocks go forward in Sep/Oct, back in Apr.
+    # Running at BOTH 06:00 and 07:00 UTC covers 7pm NZT year-round.
+    # The scrape script uses Pacific/Auckland timezone so only one run
+    # will land near 7pm each day; the other will be ~1am and can be ignored
+    # OR you can run just once at 07:00 UTC and accept ±1hr variance during DST.
+    #
+    # Recommended: single run at 07:00 UTC (7pm NZST / 8pm NZDT — close enough)
+    - cron: "0 7 * * 1-5"   # Weekdays only, 7:00 UTC
+
+  # Allow manual trigger from GitHub Actions UI
+  workflow_dispatch:
+
+permissions:
+  contents: write   # Required to push the updated Excel file back to the repo
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Pull latest to avoid push conflicts
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Chrome and ChromeDriver
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+
+      - name: Run scraper
+        run: python scrape.py
+
+      - name: Commit and push updated Excel file
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add asx_nz_futures.xlsx
+          # Only commit if there are changes
+          git diff --staged --quiet || git commit -m "chore: daily scrape $(TZ='Pacific/Auckland' date '+%Y-%m-%d')"
+          git push
