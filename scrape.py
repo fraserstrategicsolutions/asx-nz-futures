@@ -27,6 +27,11 @@ EXCEL_FILE = Path(__file__).parent / "asx_nz_futures.xlsx"
 
 TARGET_SECTIONS = {"Base Month", "Base Quarter"}
 
+NODE_MAP = {
+    "Otahuhu": "OTA2201",
+    "Benmore": "BEN2201",
+}
+
 
 def get_driver():
     opts = Options()
@@ -61,10 +66,12 @@ def clean_heading(text):
 
 def scrape() -> list[dict]:
     """
+    Returns a list of dicts: {node, period_type, time_period, price}
+
     Page structure (confirmed from live DOM):
       <h2>Otahuhu</h2>
-        <h3>Base MonthED</h3>   <- h3 text has junk suffix chars stripped by clean_heading()
-        <table>...</table>      <- columns: Contract | Bid Size | Bid | Ask | Ask Size | High | Low | Last | +/- | Vol | OpenInt | OpenInt +/- | Settle
+        <h3>Base MonthED</h3>
+        <table>...</table>   columns: Contract | Bid Size | Bid | Ask | Ask Size | High | Low | Last | +/- | Vol | OpenInt | OpenInt +/- | Settle
         <h3>Base QuarterEA</h3>
         <table>...</table>
       <h2>Benmore</h2>
@@ -141,22 +148,23 @@ def scrape() -> list[dict]:
 
                     if not contract or not settle:
                         continue
-                    # Skip rows that are sub-headers (no 4-digit year = not a contract row)
+                    # Skip rows with no 4-digit year — not a contract row
                     if not re.search(r"\d{4}", contract):
                         continue
 
                     settle_clean = settle.replace(",", "").strip()
-                    settle_price = None
+                    price = None
                     if settle_clean not in ("-", "", "N/A", "n/a"):
                         try:
-                            settle_price = float(settle_clean)
+                            price = float(settle_clean)
                         except ValueError:
                             pass
 
                     records.append({
-                        "node": current_node,
-                        "time_period": f"{current_section} – {contract}",
-                        "settle_price": settle_price,
+                        "node": NODE_MAP.get(current_node, current_node),
+                        "period_type": current_section,
+                        "time_period": contract,
+                        "price": price,
                     })
 
                 current_section = None
@@ -183,7 +191,13 @@ def append_to_excel(records: list[dict], execution_date: datetime):
 
     for record in records:
         fill = fill_even if (insert_row % 2 == 0) else fill_odd
-        cells_data = [exec_date, record["node"], record["time_period"], record["settle_price"]]
+        cells_data = [
+            exec_date,
+            record["node"],
+            record["period_type"],
+            record["time_period"],
+            record["price"],
+        ]
 
         for col, value in enumerate(cells_data, 1):
             cell = ws.cell(row=insert_row, column=col, value=value)
@@ -194,7 +208,7 @@ def append_to_excel(records: list[dict], execution_date: datetime):
             if col == 1:
                 cell.number_format = "YYYY-MM-DD"
                 cell.alignment = Alignment(horizontal="center", vertical="center")
-            if col == 4 and value is not None:
+            if col == 5 and value is not None:
                 cell.number_format = "#,##0.00"
                 cell.alignment = Alignment(horizontal="right", vertical="center")
 
@@ -217,7 +231,7 @@ def main():
 
     print(f"Scraped {len(records)} records:")
     for r in records:
-        print(f"  {r['node']:12} | {r['time_period']:40} | {r['settle_price']}")
+        print(f"  {r['node']:10} | {r['period_type']:14} | {r['time_period']:12} | {r['price']}")
 
     append_to_excel(records, execution_dt)
 
