@@ -11,7 +11,7 @@ on:
     # OR you can run just once at 07:00 UTC and accept ±1hr variance during DST.
     #
     # Recommended: single run at 07:00 UTC (7pm NZST / 8pm NZDT — close enough)
-    - cron: "0 7 * * 1-5"   # Weekdays only, 7:00 UTC
+    - cron: "0 7 * * 2-6"   # Tue-Sat UTC = Mon-Fri NZT
 
   # Allow manual trigger from GitHub Actions UI
   workflow_dispatch:
@@ -42,7 +42,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Install Chrome and ChromeDriver
-        uses: browser-actions/setup-chrome@v2
+        uses: browser-actions/setup-chrome@v1
         with:
           chrome-version: stable
 
