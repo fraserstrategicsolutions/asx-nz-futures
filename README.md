@@ -49,3 +49,4 @@ The ASX Energy page is JavaScript-rendered, so a headless Chrome browser (Seleni
 - **No records scraped**: The page structure may have changed. Inspect the page and update the heading/table detection logic in `scrape.py`.
 - **Push conflicts**: The workflow uses `fetch-depth: 1` and only commits when changes exist, minimising conflicts.
 - **DST gap**: During the NZ DST transition weekends, the scrape may run at 8pm instead of 7pm. This is cosmetic only.
+- 
