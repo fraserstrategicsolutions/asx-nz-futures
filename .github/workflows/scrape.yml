@@ -2,16 +2,7 @@ name: ASX NZ Futures Daily Scrape
 
 on:
   schedule:
-    # 7:00 PM NZST = 07:00 UTC (UTC+12 in winter / NZST)
-    # 7:00 PM NZDT = 06:00 UTC (UTC+13 in summer / NZDT)
-    # NZ observes DST: clocks go forward in Sep/Oct, back in Apr.
-    # Running at BOTH 06:00 and 07:00 UTC covers 7pm NZT year-round.
-    # The scrape script uses Pacific/Auckland timezone so only one run
-    # will land near 7pm each day; the other will be ~1am and can be ignored
-    # OR you can run just once at 07:00 UTC and accept ±1hr variance during DST.
-    #
-    # Recommended: single run at 07:00 UTC (7pm NZST / 8pm NZDT — close enough)
-    - cron: "0 7 * * 2-6"   # Tue-Sat UTC = Mon-Fri NZT
+    - cron: "0 7 * * *"   # Every day, 7:00 UTC = 7pm NZST
 
   # Allow manual trigger from GitHub Actions UI
   workflow_dispatch:
