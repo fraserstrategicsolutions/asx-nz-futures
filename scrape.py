@@ -7,7 +7,7 @@ and appends a row per contract per day to an Excel file.
 import sys
 import time
 import re
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -185,9 +185,32 @@ def append_to_excel(records: list[dict], execution_date: datetime):
     fill_even = PatternFill("solid", start_color="EBF3FB")
     fill_odd = PatternFill("solid", start_color="FFFFFF")
 
+    exec_date = execution_date.date()
+
+    # Remove any existing rows for today to prevent duplicates
+    rows_to_delete = []
+    for row in ws.iter_rows(min_row=3):
+        cell_value = row[0].value
+        if cell_value is None:
+            continue
+        # Normalise to date — Excel may store as datetime or date
+        if isinstance(cell_value, datetime):
+            row_date = cell_value.date()
+        elif isinstance(cell_value, date):
+            row_date = cell_value
+        else:
+            continue
+        if row_date == exec_date:
+            rows_to_delete.append(row[0].row)
+
+    for row_num in reversed(rows_to_delete):
+        ws.delete_rows(row_num)
+
+    if rows_to_delete:
+        print(f"Removed {len(rows_to_delete)} duplicate rows for {exec_date}")
+
     last_row = ws.max_row
     insert_row = 3 if last_row < 3 else last_row + 1
-    exec_date = execution_date.date()
 
     for record in records:
         fill = fill_even if (insert_row % 2 == 0) else fill_odd
