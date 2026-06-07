@@ -22,7 +22,7 @@ from selenium.common.exceptions import TimeoutException
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 
-URL = "https://www.asxenergy.com.au/futures_nz"
+URL = "https://www.asxenergy.com.au/futures/nz_electricity"
 EXCEL_FILE = Path(__file__).parent / "asx_nz_futures.xlsx"
 
 TARGET_SECTIONS = {"Base Month", "Base Quarter"}
@@ -31,6 +31,13 @@ NODE_MAP = {
     "Otahuhu": "OTA2201",
     "Benmore": "BEN2201",
 }
+
+# Matches a section label div, e.g. "Otahuhu Base Month ED" / "Benmore Base Quarter EE"
+LABEL_RE = re.compile(r"^(Otahuhu|Benmore)\s+(Base Month|Base Quarter|Peak Quarter|Base Cal)")
+
+MONTHS = {m: i for i, m in enumerate(
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], start=1)}
 
 
 def get_driver():
@@ -59,23 +66,47 @@ def get_driver():
     return driver
 
 
-def clean_heading(text):
-    """Strip trailing junk chars appended by the site's JS (e.g. 'Base MonthED' -> 'Base Month')."""
-    return re.sub(r'[A-Z]{1,3}$', '', text.strip()).strip()
+def clean_label(text):
+    """Collapse whitespace and strip a trailing 1-3 letter junk code (e.g. 'Otahuhu Base Month ED')."""
+    collapsed = re.sub(r"\s+", " ", text).strip()
+    return re.sub(r"\s+[A-Z]{1,3}$", "", collapsed).strip()
+
+
+def normalise_contract(raw):
+    """
+    Normalise the site's compact contract codes back to the long form used in
+    the historical data, so the Excel file stays consistent over time.
+
+      Month:   'Jun 26'  -> 'Jun 2026'
+      Quarter: 'Q326'    -> 'Q3 2026'
+    Anything unrecognised is returned unchanged.
+    """
+    raw = raw.strip()
+
+    # Quarter: Q + quarter digit + 2-digit year, e.g. 'Q326'
+    qm = re.match(r"^Q([1-4])\s*'?(\d{2})$", raw)
+    if qm:
+        q, yy = qm.group(1), qm.group(2)
+        return f"Q{q} 20{yy}"
+
+    # Month: 'Jun 26' or 'Jun26'
+    mm = re.match(r"^([A-Za-z]{3})\s*'?(\d{2})$", raw)
+    if mm and mm.group(1).title() in MONTHS:
+        return f"{mm.group(1).title()} 20{mm.group(2)}"
+
+    return raw
 
 
 def scrape() -> list[dict]:
     """
-    Returns a list of dicts: {node, period_type, time_period, price}
-
-    Page structure (confirmed from live DOM):
-      <h2>Otahuhu</h2>
-        <h3>Base MonthED</h3>
-        <table>...</table>   columns: Contract | Bid Size | Bid | Ask | Ask Size | High | Low | Last | +/- | Vol | OpenInt | OpenInt +/- | Settle
-        <h3>Base QuarterEA</h3>
-        <table>...</table>
-      <h2>Benmore</h2>
-        ...
+    New page structure (Tailwind-based, confirmed live):
+      <div class="... text-white ...">Otahuhu Base Month ED</div>
+      <table> ... </table>     # contract is the FIRST <td>, Settle is the LAST <td>
+      <div ...>Otahuhu Base Quarter EA</div>
+      <table> ... </table>
+      ...
+    Data rows have a duplicated contract column (desktop + mobile responsive copies),
+    so we always take the first <td> for the contract and the last <td> for Settle.
     """
     driver = get_driver()
     records = []
@@ -85,7 +116,7 @@ def scrape() -> list[dict]:
 
         try:
             WebDriverWait(driver, 30).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "h2"))
+                EC.presence_of_element_located((By.CSS_SELECTOR, "table"))
             )
         except TimeoutException:
             print("Timed out waiting for page to load", file=sys.stderr)
@@ -99,75 +130,54 @@ def scrape() -> list[dict]:
         current_node = None
         current_section = None
 
-        for elem in soup.find_all(["h2", "h3", "table"]):
+        for elem in soup.find_all(["div", "table"]):
 
-            if elem.name == "h2":
-                text = elem.get_text(strip=True)
-                if "Otahuhu" in text:
-                    current_node = "Otahuhu"
-                elif "Benmore" in text:
-                    current_node = "Benmore"
-                else:
-                    current_node = None
-                current_section = None
+            if elem.name == "div":
+                full = re.sub(r"\s+", " ", elem.get_text()).strip()
+                # Only short label divs, not big container divs
+                if len(full) >= 40:
+                    continue
+                m = LABEL_RE.match(clean_label(elem.get_text()))
+                if m:
+                    current_node = m.group(1)
+                    current_section = m.group(2)
                 continue
 
-            if elem.name == "h3":
-                if current_node is None:
-                    current_section = None
-                    continue
-                heading = clean_heading(elem.get_text(strip=True))
-                current_section = heading if heading in TARGET_SECTIONS else None
+            # table
+            if current_node is None or current_section not in TARGET_SECTIONS:
                 continue
 
-            if elem.name == "table":
-                if current_node is None or current_section is None:
+            rows = elem.find_all("tr")
+            if len(rows) < 2:
+                continue
+
+            for row in rows[1:]:
+                tds = row.find_all("td")
+                if len(tds) < 3:
                     continue
 
-                rows = elem.find_all("tr")
-                if len(rows) < 2:
+                contract_raw = tds[0].get_text(strip=True)
+                settle = tds[-1].get_text(strip=True)
+
+                if not contract_raw or not re.search(r"\d", contract_raw):
                     continue
 
-                header_cells = [c.get_text(strip=True) for c in rows[0].find_all(["th", "td"])]
+                settle_clean = settle.replace(",", "").strip()
+                price = None
+                if settle_clean not in ("-", "", "N/A", "n/a"):
+                    try:
+                        price = float(settle_clean)
+                    except ValueError:
+                        pass
 
-                contract_idx = 0
-                settle_idx = len(header_cells) - 1
-                for i, h in enumerate(header_cells):
-                    if "contract" in h.lower():
-                        contract_idx = i
-                    if "settle" in h.lower():
-                        settle_idx = i
+                records.append({
+                    "node": NODE_MAP.get(current_node, current_node),
+                    "period_type": current_section,
+                    "time_period": normalise_contract(contract_raw),
+                    "price": price,
+                })
 
-                for row in rows[1:]:
-                    cells = row.find_all(["td", "th"])
-                    if len(cells) <= max(contract_idx, settle_idx):
-                        continue
-
-                    contract = cells[contract_idx].get_text(strip=True)
-                    settle = cells[settle_idx].get_text(strip=True)
-
-                    if not contract or not settle:
-                        continue
-                    # Skip rows with no 4-digit year — not a contract row
-                    if not re.search(r"\d{4}", contract):
-                        continue
-
-                    settle_clean = settle.replace(",", "").strip()
-                    price = None
-                    if settle_clean not in ("-", "", "N/A", "n/a"):
-                        try:
-                            price = float(settle_clean)
-                        except ValueError:
-                            pass
-
-                    records.append({
-                        "node": NODE_MAP.get(current_node, current_node),
-                        "period_type": current_section,
-                        "time_period": contract,
-                        "price": price,
-                    })
-
-                current_section = None
+            current_section = None  # consume so the next table needs its own label
 
     finally:
         driver.quit()
@@ -193,7 +203,6 @@ def append_to_excel(records: list[dict], execution_date: datetime):
         cell_value = row[0].value
         if cell_value is None:
             continue
-        # Normalise to date — Excel may store as datetime or date
         if isinstance(cell_value, datetime):
             row_date = cell_value.date()
         elif isinstance(cell_value, date):
